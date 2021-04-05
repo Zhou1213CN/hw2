@@ -64,7 +64,7 @@ object main{
   }
 
   class BJKSTSketch(bucket_in: Set[(String, Int)] ,  z_in: Int, bucket_size_in: Int) extends Serializable {
-/* A constructor that requies intialize the bucket and the z value. The bucket size is the bucket size of the sketch. */
+    /* A constructor that requies intialize the bucket and the z value. The bucket size is the bucket size of the sketch. */
 
     var bucket: Set[(String, Int)] = bucket_in
     var z: Int = z_in
@@ -76,12 +76,25 @@ object main{
       this(Set((s, z_of_s )) , z_of_s, bucket_size_in)
     }
 
-    def +(that: BJKSTSketch): BJKSTSketch = {    /* Merging two sketches */
-
+    def +(that: BJKSTSketch): BJKSTSketch = {/* Merging two sketches */
+      bucket = bucket union that.bucket
+      if (z < that.z)  z = that.z
+      while (bucket.size >= this.BJKST_bucket_size){
+        z += 1
+        bucket = bucket.filter(s=> s._2 >= z)
+      }
+      return this
     }
 
     def add_string(s: String, z_of_s: Int): BJKSTSketch = {   /* add a string to the sketch */
-
+      if (z_of_s >=z) {
+        bucket = bucket union Set((s, z_of_s))
+        while (bucket.size >= this.BJKST_bucket_size){
+          z = z + 1
+          bucket = bucket.filter(x => {x._2 >= z})
+        }
+      }
+      return this
     }
   }
 
@@ -100,12 +113,43 @@ object main{
 
 
   def BJKST(x: RDD[String], width: Int, trials: Int) : Double = {
+    val h = Seq.fill(trials)(new hash_function(2000000000))
 
+    def param0 = (accu1: Seq[BJKSTSketch], accu2: Seq[BJKSTSketch]) => Seq.range(0,trials).map(i => accu1(i)+accu2(i))
+    def param1 = (accu1: Seq[BJKSTSketch], s: String) => Seq.range(0,trials).map( i =>  accu1(i).add_string(s, h(i).zeroes(h(i).hash(s))))
+
+    val x3 = x.aggregate(Seq.fill(trials)(new BJKSTSketch("dum", 0, width)))(param1, param0)
+    val ans = x3.map(bjkstsketch => scala.math.pow(2, bjkstsketch.z.toDouble)*bjkstsketch.bucket.size).sortWith(_ < _)(trials/2)
+    return ans
   }
 
+  def sketch(x: RDD[String]): Double = {
+    val hashFunc = new four_universal_Radamacher_hash_function()
+    var temp = 0.0
+    temp = x.map(token => hashFunc.hash(token)).reduce(_ + _)
+    return temp * temp
+  }
 
-  def Tug_of_War(x: RDD[String], width: Int, depth:Int) : Long = {
-
+  def Tug_of_War(x: RDD[String], width: Int, depth: Int): Double = {
+    val numberOfTow = width * depth
+    var meansDepth = List(0.0)
+    val resultCollection = Seq.fill(numberOfTow)(sketch(x))//populate the results of sketches
+    println(resultCollection)
+    //populate meansDepth by groups of size of width
+    for (b <- 0 to depth-1) {
+      var mean = 0.0
+      for (a <- 0 to width-1) {
+        mean = mean + resultCollection(b*width + a)
+      }
+      //println(mean)
+      mean = mean / width
+      meansDepth = mean :: meansDepth
+      mean = 0//reset mean to 0
+    }
+    meansDepth = meansDepth.dropRight(1)
+    println(meansDepth)
+    val ans = meansDepth.sorted
+    return ans(ans.size / 2) // Take the median of the depth means
   }
 
 
@@ -114,9 +158,8 @@ object main{
     return ans
   }
 
-
   def exact_F2(x: RDD[String]) : Long = {
-
+    return x.map(s => (s, 1L)).reduceByKey(_ + _).map(f => f._2 * f._2).reduce(_ + _).toLong;
   }
 
 
@@ -130,7 +173,7 @@ object main{
     }
     val input_path = args(0)
 
-  //    val df = spark.read.format("csv").load("data/2014to2017.csv")
+    //    val df = spark.read.format("csv").load("data/2014to2017.csv")
     val df = spark.read.format("csv").load(input_path)
     val dfrdd = df.rdd.map(row => row.getString(0))
 
@@ -138,16 +181,23 @@ object main{
 
     if(args(1)=="BJKST") {
       if (args.length != 4) {
-        println("Usage: project_2 input_path BJKST #buckets trials")
+        println("Usage: project_2 input_path BJKST #buckets trials rounds")
         sys.exit(1)
       }
       val ans = BJKST(dfrdd, args(2).toInt, args(3).toInt)
 
+      //Find the smallest width that at least 95% success
+      //      var success = 0
+      //      var ans:Double = 0.0
+      //      for (i <- 1 to args(4).toInt){
+      //        ans = BJKST(dfrdd, args(2).toInt, args(3).toInt)
+      //        if (ans < 1.2*7406649 && ans > 0.8*7406649) success += 1
+      //      }
       val endTimeMillis = System.currentTimeMillis()
       val durationSeconds = (endTimeMillis - startTimeMillis) / 1000
 
       println("==================================")
-      println("BJKST Algorithm. Bucket Size:"+ args(2) + ". Trials:" + args(3) +". Time elapsed:" + durationSeconds + "s. Estimate: "+ans)
+      println("BJKST Algorithm. Bucket Size:"+ args(2) + ". Trials:" + args(3) +". Time elapsed:" + durationSeconds + "s. Estimate: "+ ans + "Count:")
       println("==================================")
     }
     else if(args(1)=="tidemark") {
@@ -165,9 +215,9 @@ object main{
 
     }
     else if(args(1)=="ToW") {
-       if(args.length != 4) {
-         println("Usage: project_2 input_path ToW width depth")
-         sys.exit(1)
+      if(args.length != 4) {
+        println("Usage: project_2 input_path ToW width depth")
+        sys.exit(1)
       }
       val ans = Tug_of_War(dfrdd, args(2).toInt, args(3).toInt)
       val endTimeMillis = System.currentTimeMillis()
